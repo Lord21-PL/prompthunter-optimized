@@ -1,0 +1,7 @@
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  // Remove all problematic configurations
+  // Railway handles environment variables automatically
+}
+
+module.exports = nextConfig
