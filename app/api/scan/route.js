@@ -1,12 +1,38 @@
 import { NextResponse } from 'next/server';
+import { TwitterClient } from '../../../lib/twitter';
+import { OpenAIAnalyzer } from '../../../lib/openai';
 
 // Przechowywanie ostatnich skanowań w pamięci
 let scanHistory = {};
 
 export async function POST() {
   try {
+    // Sprawdź API keys
+    const twitterToken = process.env.TWITTER_BEARER_TOKEN;
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    if (!twitterToken) {
+      await addLog('error', 'Brak Twitter Bearer Token', 'Ustaw TWITTER_BEARER_TOKEN w zmiennych środowiskowych');
+      return NextResponse.json({
+        success: false,
+        error: 'Brak Twitter Bearer Token. Ustaw TWITTER_BEARER_TOKEN w ustawieniach Railway.'
+      });
+    }
+
+    if (!openaiKey) {
+      await addLog('error', 'Brak OpenAI API Key', 'Ustaw OPENAI_API_KEY w zmiennych środowiskowych');
+      return NextResponse.json({
+        success: false,
+        error: 'Brak OpenAI API Key. Ustaw OPENAI_API_KEY w ustawieniach Railway.'
+      });
+    }
+
     // Log rozpoczęcia
-    await addLog('scan', 'Skanowanie rozpoczęte', 'Sprawdzanie profili do skanowania...');
+    await addLog('scan', 'Skanowanie rozpoczęte', 'Inicjalizacja Twitter API i OpenAI...');
+
+    // Inicjalizuj klientów
+    const twitter = new TwitterClient(twitterToken);
+    const openai = new OpenAIAnalyzer(openaiKey);
 
     // Pobierz profile do skanowania
     let profiles = [];
@@ -15,21 +41,15 @@ export async function POST() {
       if (profilesResponse.ok) {
         const profilesData = await profilesResponse.json();
         profiles = profilesData.profiles || [];
-      } else {
-        await addLog('warning', 'Nie można pobrać profili', 'Używam domyślnego profilu');
-        profiles = [{ username: 'miroburn' }]; // Fallback
       }
     } catch (error) {
-      await addLog('warning', 'Błąd pobierania profili', 'Używam domyślnego profilu');
-      profiles = [{ username: 'miroburn' }]; // Fallback
+      await addLog('warning', 'Nie można pobrać profili', 'Używam domyślnego profilu');
     }
 
+    // Fallback do domyślnego profilu
     if (profiles.length === 0) {
-      await addLog('warning', 'Brak profili do skanowania', 'Dodaj profile w ustawieniach');
-      return NextResponse.json({
-        success: false,
-        error: 'Brak profili do skanowania. Dodaj profile w ustawieniach.'
-      });
+      profiles = [{ username: 'miroburn' }];
+      await addLog('info', 'Używam domyślnego profilu', 'Profile: @miroburn');
     }
 
     await addLog('info', `Znaleziono ${profiles.length} profili do skanowania`, 
@@ -40,35 +60,41 @@ export async function POST() {
       scanned_profiles: 0,
       new_prompts: 0,
       skipped_duplicates: 0,
-      api_requests_used: 0
+      api_requests_used: 0,
+      twitter_requests: 0,
+      openai_requests: 0,
+      tweets_analyzed: 0
     };
 
     // Skanuj każdy profil
     for (const profile of profiles) {
-      await addLog('scan', `🔍 Skanowanie @${profile.username}`, 'Sprawdzanie ostatniego skanowania...');
+      await addLog('scan', `🔍 Skanowanie @${profile.username}`, 'Pobieranie danych użytkownika...');
 
-      const profileResult = await scanProfile(profile);
+      const profileResult = await scanProfileDeep(twitter, openai, profile);
 
       scanResults.scanned_profiles++;
       scanResults.new_prompts += profileResult.new_prompts;
       scanResults.skipped_duplicates += profileResult.skipped_duplicates;
-      scanResults.api_requests_used += profileResult.api_requests;
+      scanResults.twitter_requests += profileResult.twitter_requests;
+      scanResults.openai_requests += profileResult.openai_requests;
+      scanResults.tweets_analyzed += profileResult.tweets_analyzed;
+      scanResults.api_requests_used += profileResult.twitter_requests + profileResult.openai_requests;
 
       await addLog('success', 
         `✅ @${profile.username} - ${profileResult.new_prompts} nowych promptów`,
-        `API requests: ${profileResult.api_requests}, Duplikaty: ${profileResult.skipped_duplicates}`
+        `Tweety: ${profileResult.tweets_analyzed}, Twitter: ${profileResult.twitter_requests} req, OpenAI: ${profileResult.openai_requests} req, Duplikaty: ${profileResult.skipped_duplicates}`
       );
     }
 
     // Log zakończenia
     await addLog('success', 'Skanowanie zakończone pomyślnie!', 
-      `Nowe prompty: ${scanResults.new_prompts}, API requests: ${scanResults.api_requests_used}`);
+      `Nowe prompty: ${scanResults.new_prompts}, Tweety przeanalizowane: ${scanResults.tweets_analyzed}, Twitter API: ${scanResults.twitter_requests}, OpenAI API: ${scanResults.openai_requests}`);
 
     const scanTime = new Date().toISOString();
 
     return NextResponse.json({
       success: true,
-      message: `Skanowanie zakończone! Znaleziono ${scanResults.new_prompts} nowych promptów.`,
+      message: `Skanowanie zakończone! Znaleziono ${scanResults.new_prompts} nowych promptów z ${scanResults.tweets_analyzed} tweetów.`,
       results: scanResults,
       scan_time: scanTime
     });
@@ -82,126 +108,161 @@ export async function POST() {
   }
 }
 
-async function scanProfile(profile) {
+async function scanProfileDeep(twitter, openai, profile) {
   const username = profile.username;
   const now = new Date();
 
-  // Sprawdź czy to pierwsze skanowanie tego profilu
-  const lastScan = scanHistory[username];
-  const isFirstScan = !lastScan;
-
   let newPrompts = 0;
   let skippedDuplicates = 0;
-  let apiRequests = 0;
+  let twitterRequests = 0;
+  let openaiRequests = 0;
+  let tweetsAnalyzed = 0;
 
-  if (isFirstScan) {
-    // PIERWSZE SKANOWANIE
-    await addLog('info', `📊 Pierwsze skanowanie @${username}`, 'Pobieranie ostatnich tweetów (max 3 requesty)');
+  try {
+    // 1. Pobierz dane użytkownika
+    await addLog('api', `📡 Pobieranie danych @${username}`, 'Twitter API: GET /users/by/username');
+    const user = await twitter.getUserByUsername(username);
+    twitterRequests++;
 
-    const mockPrompts = generateMockPrompts(username, 'full_scan');
-    apiRequests = 3;
+    if (!user) {
+      await addLog('warning', `❌ Użytkownik @${username} nie znaleziony`, 'Sprawdź czy nazwa użytkownika jest poprawna');
+      return { new_prompts: 0, skipped_duplicates: 0, twitter_requests: twitterRequests, openai_requests: 0, tweets_analyzed: 0 };
+    }
 
-    for (const prompt of mockPrompts) {
-      const added = await addPromptIfNew(prompt);
-      if (added === true) {
-        newPrompts++;
-        await addLog('success', `➕ Nowy prompt od @${username}`, prompt.content.substring(0, 100) + '...');
-      } else if (added === false) {
-        skippedDuplicates++;
-        await addLog('warning', `⏭️ Duplikat od @${username}`, 'Prompt już istnieje w bazie');
+    await addLog('success', `✅ Znaleziono @${username}`, `ID: ${user.id}, Followers: ${user.public_metrics?.followers_count || 0}`);
+
+    // 2. Sprawdź czy to pierwsze skanowanie
+    const lastScan = scanHistory[username];
+    const isFirstScan = !lastScan;
+
+    let tweetsToAnalyze = [];
+
+    if (isFirstScan) {
+      // PIERWSZE SKANOWANIE - pobierz DUŻO tweetów (do 1000!)
+      await addLog('info', `📊 Pierwsze skanowanie @${username}`, 'Pobieranie ostatnich 1000 tweetów w wielu requestach...');
+
+      const result = await twitter.getUserTweetsDeep(user.id, {
+        totalTweets: 1000,        // ← ZWIĘKSZONE: 1000 tweetów!
+        excludeReplies: true,
+        excludeRetweets: true
+      });
+
+      twitterRequests += result.meta.requests_used;
+      tweetsToAnalyze = result.tweets || [];
+
+      await addLog('info', `📥 Pobrano ${tweetsToAnalyze.length} tweetów w ${result.meta.requests_used} requestach`, 
+        `Najstarszy: ${tweetsToAnalyze[tweetsToAnalyze.length - 1]?.created_at || 'brak'}`);
+
+    } else {
+      // AKTUALIZACJA - pobierz tylko nowe tweety
+      const hoursSinceLastScan = (now - new Date(lastScan.timestamp)) / (1000 * 60 * 60);
+
+      if (hoursSinceLastScan < 23) {
+        await addLog('info', `⏰ @${username} skanowany ${Math.round(hoursSinceLastScan)}h temu`, 'Pomijam - zbyt niedawno');
+        return { new_prompts: 0, skipped_duplicates: 0, twitter_requests: twitterRequests, openai_requests: 0, tweets_analyzed: 0 };
+      }
+
+      await addLog('info', `🔄 Aktualizacja @${username}`, `Pobieranie nowych tweetów od ID: ${lastScan.lastTweetId}`);
+
+      const result = await twitter.getUserTweetsDeep(user.id, {
+        totalTweets: 200,         // ← ZWIĘKSZONE: 200 nowych tweetów
+        sinceId: lastScan.lastTweetId,
+        excludeReplies: true,
+        excludeRetweets: true
+      });
+
+      twitterRequests += result.meta.requests_used;
+      tweetsToAnalyze = result.tweets || [];
+
+      await addLog('info', `📥 Pobrano ${tweetsToAnalyze.length} nowych tweetów w ${result.meta.requests_used} requestach`, 'Od ostatniego skanowania');
+    }
+
+    if (tweetsToAnalyze.length === 0) {
+      await addLog('info', `📭 Brak nowych tweetów od @${username}`, 'Nic do analizy');
+      return { new_prompts: 0, skipped_duplicates: 0, twitter_requests: twitterRequests, openai_requests: 0, tweets_analyzed: 0 };
+    }
+
+    // 3. Analizuj tweety przez OpenAI
+    await addLog('scan', `🤖 Analizowanie ${tweetsToAnalyze.length} tweetów`, 'OpenAI sprawdza czy zawierają prompty...');
+
+    for (const tweet of tweetsToAnalyze) {
+      // Pomiń bardzo krótkie tweety
+      if (tweet.text.length < 20) {
+        continue;
+      }
+
+      tweetsAnalyzed++;
+
+      await addLog('api', `🧠 Analizuję tweet ${tweet.id} (${tweetsAnalyzed}/${tweetsToAnalyze.length})`, 
+        tweet.text.substring(0, 100) + '...');
+
+      const analysis = await openai.analyzePrompt(tweet.text);
+      openaiRequests++;
+
+      if (analysis.isPrompt && analysis.confidence >= 0.7) {
+        // To prawdopodobnie prompt!
+        const promptData = {
+          content: tweet.text,
+          category: analysis.category,
+          confidence: analysis.confidence,
+          username: username,
+          tweet_id: tweet.id,
+          tweet_url: `https://twitter.com/${username}/status/${tweet.id}`,
+          created_at: tweet.created_at,
+          reasoning: analysis.reasoning
+        };
+
+        const added = await addPromptIfNew(promptData);
+        if (added === true) {
+          newPrompts++;
+          await addLog('success', `➕ Znaleziono prompt! (${Math.round(analysis.confidence * 100)}%)`, 
+            `${analysis.category}: ${tweet.text.substring(0, 100)}...`);
+        } else if (added === false) {
+          skippedDuplicates++;
+          await addLog('warning', `⏭️ Duplikat promptu`, 'Tweet już w bazie danych');
+        } else {
+          await addLog('error', `❌ Błąd zapisywania promptu`, added);
+        }
       } else {
-        // Błąd API
-        await addLog('error', `❌ Błąd dodawania promptu od @${username}`, added);
+        await addLog('info', `⏭️ Tweet nie jest promptem (${Math.round(analysis.confidence * 100)}%)`, 
+          analysis.reasoning || 'Niska pewność');
       }
     }
 
-  } else {
-    // AKTUALIZACJA
-    const hoursSinceLastScan = (now - new Date(lastScan)) / (1000 * 60 * 60);
+    // 4. Zapisz informacje o skanowaniu
+    scanHistory[username] = {
+      timestamp: now.toISOString(),
+      lastTweetId: tweetsToAnalyze[0]?.id || null,
+      tweetsAnalyzed: tweetsAnalyzed,
+      totalTweets: tweetsToAnalyze.length
+    };
 
-    if (hoursSinceLastScan < 23) {
-      await addLog('info', `⏰ @${username} skanowany ${Math.round(hoursSinceLastScan)}h temu`, 'Pomijam - zbyt niedawno');
-      return { new_prompts: 0, skipped_duplicates: 0, api_requests: 0 };
-    }
+    return {
+      new_prompts: newPrompts,
+      skipped_duplicates: skippedDuplicates,
+      twitter_requests: twitterRequests,
+      openai_requests: openaiRequests,
+      tweets_analyzed: tweetsAnalyzed
+    };
 
-    await addLog('info', `🔄 Aktualizacja @${username}`, 'Pobieranie tylko nowych tweetów (1 request)');
-
-    const mockPrompts = generateMockPrompts(username, 'update');
-    apiRequests = 1;
-
-    for (const prompt of mockPrompts) {
-      const added = await addPromptIfNew(prompt);
-      if (added === true) {
-        newPrompts++;
-        await addLog('success', `➕ Nowy prompt od @${username}`, prompt.content.substring(0, 100) + '...');
-      } else if (added === false) {
-        skippedDuplicates++;
-      } else {
-        await addLog('error', `❌ Błąd dodawania promptu od @${username}`, added);
-      }
-    }
-  }
-
-  // Zapisz czas skanowania
-  scanHistory[username] = now.toISOString();
-
-  return {
-    new_prompts: newPrompts,
-    skipped_duplicates: skippedDuplicates,
-    api_requests: apiRequests
-  };
-}
-
-function generateMockPrompts(username, scanType) {
-  const basePrompts = [
-    {
-      content: `Create a comprehensive guide for ${username}'s industry. Include step-by-step instructions, best practices, and common pitfalls to avoid.`,
-      category: 'ChatGPT',
-      confidence: 0.91
-    },
-    {
-      content: `Design a modern logo for a tech startup, minimalist style, blue and white colors, clean typography, professional look`,
-      category: 'Midjourney',
-      confidence: 0.88
-    },
-    {
-      content: `Act as a ${username} expert. Analyze the current market trends and provide actionable insights for the next quarter.`,
-      category: 'Claude',
-      confidence: 0.85
-    }
-  ];
-
-  if (scanType === 'full_scan') {
-    return basePrompts.map((prompt, index) => ({
-      ...prompt,
-      username,
-      tweet_id: `${username}_${Date.now()}_${index}`,
-      tweet_url: `https://twitter.com/${username}/status/${Date.now() + index}`,
-      created_at: new Date(Date.now() - (index * 3600000)).toISOString()
-    }));
-  } else {
-    return basePrompts.slice(0, 1).map((prompt, index) => ({
-      ...prompt,
-      username,
-      tweet_id: `${username}_new_${Date.now()}_${index}`,
-      tweet_url: `https://twitter.com/${username}/status/${Date.now() + index}`,
-      created_at: new Date().toISOString()
-    }));
+  } catch (error) {
+    await addLog('error', `❌ Błąd skanowania @${username}`, error.message);
+    return {
+      new_prompts: 0,
+      skipped_duplicates: 0,
+      twitter_requests: twitterRequests,
+      openai_requests: openaiRequests,
+      tweets_analyzed: tweetsAnalyzed
+    };
   }
 }
 
 async function addPromptIfNew(promptData) {
   try {
-    // Sprawdź czy endpoint istnieje
     const existingResponse = await fetch(`${getBaseUrl()}/api/prompts`);
 
     if (!existingResponse.ok) {
       return `API prompts nie odpowiada: ${existingResponse.status}`;
-    }
-
-    const contentType = existingResponse.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      return `API prompts zwraca HTML zamiast JSON`;
     }
 
     const existingData = await existingResponse.json();
@@ -244,15 +305,12 @@ async function addLog(type, message, details = null) {
 }
 
 function getBaseUrl() {
-  // Dla Railway
   if (process.env.RAILWAY_PUBLIC_DOMAIN) {
     return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
   }
-  // Dla Vercel
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
   }
-  // Lokalnie
   return 'http://localhost:3000';
 }
 
