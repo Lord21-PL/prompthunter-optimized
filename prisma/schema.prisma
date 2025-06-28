@@ -8,98 +8,43 @@ datasource db {
 }
 
 model Profile {
-  id          String   @id @default(cuid())
+  id          Int      @id @default(autoincrement())
   username    String   @unique
   displayName String?
-  avatarUrl   String?
   isActive    Boolean  @default(true)
-  priority    String   @default("normal") // "high", "normal", "low"
-  lastScanAt  DateTime?
+  lastScan    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tweets      Tweet[]
+  prompts     Prompt[]
 
   @@map("profiles")
 }
 
-model Tweet {
-  id        String   @id
-  content   String
-  authorId  String
-  createdAt DateTime
-  url       String   @unique
-
-  profile   Profile  @relation(fields: [authorId], references: [username])
-  prompts   Prompt[]
-
-  @@map("tweets")
-}
-
-model Category {
-  id          String @id @default(cuid())
-  name        String @unique
-  slug        String @unique
-  description String?
-
-  subcategories Subcategory[]
-
-  @@map("categories")
-}
-
-model Subcategory {
-  id          String @id @default(cuid())
-  name        String
-  slug        String
-  description String?
-  categoryId  String
-
-  category    Category @relation(fields: [categoryId], references: [id])
-  prompts     Prompt[]
-
-  @@unique([categoryId, slug])
-  @@map("subcategories")
-}
-
 model Prompt {
-  id          String      @id @default(cuid())
-  content        String
-  description    String?
-  contentHash    String      @unique
-  version        String      @default("1.0")
-  parentId       String?
-  subcategoryId  String
-  tweetId        String
-  extractedAt    DateTime    @default(now())
+  id          Int      @id @default(autoincrement())
+  content     String
+  tweetId     String   @unique
+  tweetUrl    String
+  category    String?
+  confidence  Float?
+  isProcessed Boolean  @default(false)
+  createdAt   DateTime @default(now())
 
-  subcategory    Subcategory @relation(fields: [subcategoryId], references: [id])
-  tweet          Tweet       @relation(fields: [tweetId], references: [id])
-  parent         Prompt?     @relation("PromptVersions", fields: [parentId], references: [id])
-  versions       Prompt[]    @relation("PromptVersions")
+  profileId   Int
+  profile     Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
 
   @@map("prompts")
 }
 
-model ScanLog {
-  id          String   @id @default(cuid())
-  profileId   String
-  status      String   // 'success', 'error', 'partial'
-  tweetsFound Int      @default(0)
-  promptsFound Int     @default(0)
-  requestsUsed Int     @default(0)
-  errorMessage String?
-  startedAt   DateTime @default(now())
-  completedAt DateTime?
-
-  @@map("scan_logs")
-}
-
 model ApiUsage {
-  id          String   @id @default(cuid())
-  month       String   @unique // Format: YYYY-MM
-  requestsUsed Int     @default(0)
-  lastUsedAt  DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  service     String   // "twitter" or "openai"
+  requests    Int      @default(0)
+  month       String   // "2025-06"
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
+  @@unique([service, month])
   @@map("api_usage")
 }

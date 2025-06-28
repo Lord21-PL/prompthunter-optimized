@@ -18,7 +18,11 @@
     "@types/react-dom": "^18.2.0",
     "tailwindcss": "^3.3.0",
     "autoprefixer": "^10.4.16",
-    "postcss": "^8.4.32"
+    "postcss": "^8.4.32",
+    "twitter-api-v2": "^1.15.0",
+    "openai": "^4.20.0",
+    "prisma": "^5.7.0",
+    "@prisma/client": "^5.7.0"
   },
   "devDependencies": {
     "eslint": "^8.56.0",
