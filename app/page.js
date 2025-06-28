@@ -28,17 +28,34 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
             <a 
               href="/settings" 
-              className="inline-block bg-blue-600 text-white px-8 py-4 rounded-lg font-semibold hover:bg-blue-700 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+              className="bg-blue-600 text-white px-6 py-4 rounded-lg font-semibold hover:bg-blue-700 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1 text-center"
             >
-              ⚙️ Przejdź do Ustawień
+              ⚙️ Ustawienia
             </a>
 
-            <div className="text-sm text-gray-500 mt-4">
-              Skonfiguruj API, dodaj profile do śledzenia i zacznij zbierać prompty!
-            </div>
+            <a 
+              href="/prompts" 
+              className="bg-green-600 text-white px-6 py-4 rounded-lg font-semibold hover:bg-green-700 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1 text-center"
+            >
+              📝 Znalezione Prompty
+            </a>
+
+            <a 
+              href="/logs" 
+              className="bg-purple-600 text-white px-6 py-4 rounded-lg font-semibold hover:bg-purple-700 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1 text-center"
+            >
+              📋 Logi Systemu
+            </a>
+
+            <button 
+              onClick={() => fetch('/api/scan', {method: 'POST'}).then(() => alert('Skanowanie rozpoczęte! Sprawdź logi.'))}
+              className="bg-orange-600 text-white px-6 py-4 rounded-lg font-semibold hover:bg-orange-700 transition-colors shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+            >
+              🔍 Skanuj Teraz
+            </button>
           </div>
         </div>
 
@@ -60,6 +77,14 @@ export default function Home() {
             <div className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
               <span className="text-2xl">🔄</span>
               <span className="text-gray-700">Automatyczne aktualizacje co 24h</span>
+            </div>
+            <div className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
+              <span className="text-2xl">📋</span>
+              <span className="text-gray-700">Logi w czasie rzeczywistym</span>
+            </div>
+            <div className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
+              <span className="text-2xl">🧠</span>
+              <span className="text-gray-700">Inteligentne skanowanie z pamięcią</span>
             </div>
           </div>
         </div>
