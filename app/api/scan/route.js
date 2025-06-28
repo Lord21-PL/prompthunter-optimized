@@ -9,9 +9,20 @@ export async function POST() {
     await addLog('scan', 'Skanowanie rozpoczęte', 'Sprawdzanie profili do skanowania...');
 
     // Pobierz profile do skanowania
-    const profilesResponse = await fetch(`${getBaseUrl()}/api/profiles`);
-    const profilesData = await profilesResponse.json();
-    const profiles = profilesData.profiles || [];
+    let profiles = [];
+    try {
+      const profilesResponse = await fetch(`${getBaseUrl()}/api/profiles`);
+      if (profilesResponse.ok) {
+        const profilesData = await profilesResponse.json();
+        profiles = profilesData.profiles || [];
+      } else {
+        await addLog('warning', 'Nie można pobrać profili', 'Używam domyślnego profilu');
+        profiles = [{ username: 'miroburn' }]; // Fallback
+      }
+    } catch (error) {
+      await addLog('warning', 'Błąd pobierania profili', 'Używam domyślnego profilu');
+      profiles = [{ username: 'miroburn' }]; // Fallback
+    }
 
     if (profiles.length === 0) {
       await addLog('warning', 'Brak profili do skanowania', 'Dodaj profile w ustawieniach');
@@ -92,12 +103,15 @@ async function scanProfile(profile) {
 
     for (const prompt of mockPrompts) {
       const added = await addPromptIfNew(prompt);
-      if (added) {
+      if (added === true) {
         newPrompts++;
         await addLog('success', `➕ Nowy prompt od @${username}`, prompt.content.substring(0, 100) + '...');
-      } else {
+      } else if (added === false) {
         skippedDuplicates++;
         await addLog('warning', `⏭️ Duplikat od @${username}`, 'Prompt już istnieje w bazie');
+      } else {
+        // Błąd API
+        await addLog('error', `❌ Błąd dodawania promptu od @${username}`, added);
       }
     }
 
@@ -117,11 +131,13 @@ async function scanProfile(profile) {
 
     for (const prompt of mockPrompts) {
       const added = await addPromptIfNew(prompt);
-      if (added) {
+      if (added === true) {
         newPrompts++;
         await addLog('success', `➕ Nowy prompt od @${username}`, prompt.content.substring(0, 100) + '...');
-      } else {
+      } else if (added === false) {
         skippedDuplicates++;
+      } else {
+        await addLog('error', `❌ Błąd dodawania promptu od @${username}`, added);
       }
     }
   }
@@ -176,14 +192,25 @@ function generateMockPrompts(username, scanType) {
 
 async function addPromptIfNew(promptData) {
   try {
+    // Sprawdź czy endpoint istnieje
     const existingResponse = await fetch(`${getBaseUrl()}/api/prompts`);
+
+    if (!existingResponse.ok) {
+      return `API prompts nie odpowiada: ${existingResponse.status}`;
+    }
+
+    const contentType = existingResponse.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return `API prompts zwraca HTML zamiast JSON`;
+    }
+
     const existingData = await existingResponse.json();
     const existingPrompts = existingData.prompts || [];
 
     const exists = existingPrompts.some(p => p.tweet_id === promptData.tweet_id);
 
     if (exists) {
-      return false;
+      return false; // Duplikat
     }
 
     const response = await fetch(`${getBaseUrl()}/api/prompts`, {
@@ -192,11 +219,15 @@ async function addPromptIfNew(promptData) {
       body: JSON.stringify(promptData)
     });
 
+    if (!response.ok) {
+      return `Błąd POST: ${response.status}`;
+    }
+
     const result = await response.json();
-    return result.success;
+    return result.success === true;
+
   } catch (error) {
-    await addLog('error', 'Błąd dodawania promptu', error.message);
-    return false;
+    return `Exception: ${error.message}`;
   }
 }
 
